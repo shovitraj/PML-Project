@@ -1,0 +1,191 @@
+```{r date, echo=FALSE}
+date_today <- Sys.Date()
+```
+
+---
+title: "Peer-graded Assignment: Prediction Assignment Writeup"
+author: "Shovit Bhari"
+date: `r date_today`
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Human Activity Recognition
+
+## 1. Overview
+
+This is the final report for Coursera's Practical Machine Learning course, which is a part of Data Science Specializaiton. The main goal of the project is to predict the manner in which 6 participants performed dumbell bicep curls using different machine learning algorithms. The results and accuracy of the training model is used to predict the behavior of 20 test cases. The results of the predictions are submitted in a quiz.  
+
+## 2. Introduction
+
+Large amount of data about personal activity can be collected relatively inexpensively using devices such as Jawbone Up, Nike FuleBand, and Fitbit. These smart devices have helped improve people's health by finding patterns in their behaviors. People often quntify how much of a particular activity they do, but rarely quantify their quality. 
+
+As per [Human Activity Recognition Project,](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions and accelerometers are located in different parts. 
+
+* Class A: Exactly according to the specification (Class A) 
+* Class B: Throwing the elbows to the front
+* Class C: Lifting the dumbell only halfway
+* Class D: Lowering the dumbell only halfway
+* Class E: Throwing the hips to the front
+
+The location of accelerometers are depicted in the image below. 
+
+![Image Credit:http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har](onbody.png){width=200px}
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. Researchers made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg). 
+
+
+## 3. Environment Preparation
+
+We first upload the R libraries that are necessary for the complete analysis.
+```{r library, message=FALSE, warning=FALSE}
+library(knitr)
+library(caret)
+library(ggplot2)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(parallel)
+library(doParallel)
+library(corrplot)
+```
+
+## 4. Data Preparation
+### 4.1. Download data
+```{r download, message=FALSE, warning=FALSE}
+if(!dir.exists("./data")){dir.create("./data")}
+url1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+filepath1 <- "./data/pml_training.csv"
+filepath2 <- "./data/pml_testing.csv"
+download.file (url1, filepath1)
+download.file (url2, filepath2)
+```
+
+### 4.2. Load Data
+```{r load, warning=FALSE, message=FALSE}
+training <- read.csv("./data/pml_training.csv", na.strings = c("NA", "#DIV/0!", ""))
+testing <- read.csv("./data/pml_testing.csv", na.strings= c("NA", "#DIV/0!", ""))
+dim(training); dim(testing)
+```
+
+### 4.3. Clean Data
+Both datasets have 160 variables and have plenty of variables with NA values. We first remove those data that contains more than 95% of the observation ot be NA. We filter out those records. We remove NA values are removed and datasets with no NA's are created. In addition, we remove non-predictors which includes the index, subject anme, time and window variables.
+```{r clean}
+noNA <- colSums(is.na(training))/nrow(training) < 0.95
+training_noNA <- training[, noNA]
+testing_noNA <- testing[,noNA]
+training_new <- training_noNA[,-c(1:7)]
+testing_new <- testing_noNA[,-c(1:7)]
+dim(training_new);dim(testing_new)
+```
+
+### 4.4 Partition the training data into training and cross validation
+The new training dataset is partitioned to 70% train dataset and 30% cross validation dataset. 
+```{r partition, warning=FALSE, message=FALSE}
+inTrain  <- createDataPartition(training_new$classe, p=0.7, list=FALSE)
+TrainSet <- training_new[inTrain, ]
+CVSet  <- training_new[-inTrain, ]
+dim(TrainSet)
+```
+
+### 4.5 A correlation among variables is analyzed modeling. 
+
+```{r, cache = T}
+corrPlot <- cor(TrainSet[, -length(names(TrainSet))])
+corrplot(corrPlot, method="color",type = "lower", 
+         tl.cex = 0.9, tl.col = rgb(0, 0, 1))
+
+```
+  
+
+The highly correlated variables are shown in dark colors in the graph above.
+
+## 5. Prediction Model Building
+
+Three methods will be applied to the model to make prediction and confusion matrix is used to calculate the results and the accuracy.
+
+5.1: Decision Tree  
+5.2: Generalized Boosted Model  
+5.3: Random Forest  
+
+### 5.1 ML Algorithm:Decision Tree
+
+```{r dt}
+dtmodel <-train(classe~., data=TrainSet, method="rpart")
+dtpred <- predict(dtmodel, CVSet)
+decisionTreeCM <- confusionMatrix(CVSet$classe, dtpred)
+decisionTreeCM
+rpart.plot(dtmodel$finalModel)
+dtAccuracy <- confusionMatrix(CVSet$class, dtpred)$overall['Accuracy']
+dtAccuracy
+```
+
+
+GBM and RF methods takes a long time to run. So parallel processing is used in caret package to increase processing time. Combination of prallel and doParallel packages are used to improve performance time. 
+```{r parallel}
+# 1: Configure Parallel Processing
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+cluster
+registerDoParallel(cluster)
+```
+
+```{r}
+#2: Configure trainControl object
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+```
+
+
+### 5.2 ML Algorithm: Generalized Boosted Model
+```{r gbm,message=FALSE, warning=FALSE,message=FALSE, results='hide'}
+#3: Develop Training Model
+gbmmodel <-train(classe~., data=TrainSet, method="gbm", trControl=fitControl)
+```
+
+```{r gbmpred,message=FALSE, warning=FALSE,message=FALSE}
+gbmpred<- predict(gbmmodel, CVSet)
+GBM_CM <- confusionMatrix(CVSet$classe, gbmpred)
+gbmAccuracy<- confusionMatrix(CVSet$class, gbmpred)$overall['Accuracy']
+GBM_CM
+gbmAccuracy
+```
+
+### 5.3 ML Algorithm:Random Forest
+```{r}
+#3: develop rf training model
+rfmodel <- train(classe~., data=TrainSet, method="rf", trControl=fitControl)
+```
+
+```{r}
+rfpred <- predict(rfmodel, CVSet)
+rfCM<- confusionMatrix(CVSet$classe, rfpred)
+rfCM
+rfAccuracy<- confusionMatrix(CVSet$class, rfpred)$overall['Accuracy']
+rfAccuracy
+```
+
+```{r}
+#4: de-register parallel processing cluster
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## 6.Applying the Selected Model to the Test Data
+
+The accuracy of the 3 regression modeling methods above are:
+
+* Decision Tree : `r dtAccuracy`
+* GBM           : `r gbmAccuracy`
+* Random Forest : `r rfAccuracy`
+
+Random Forest method has the highest accuracy of `r rfAccuracy`. Therefore, the Random Forest model will be applied to predict the testing dataset (Project Quiz results for 20 sets)
+
+```{r}
+predict(rfmodel, testing_new)
+```
